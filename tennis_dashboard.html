@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tennis Match Predictor</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+       background:#0f0f13;color:#e2e2e8;font-size:13px;padding:0 0 40px}
+  .header{background:#18181f;border-bottom:1px solid #2a2a38;padding:14px 22px;
+          display:flex;align-items:center;justify-content:space-between;
+          position:sticky;top:0;z-index:10}
+  .header h1{font-size:16px;font-weight:600}
+  .sub{color:#6b6b80;font-size:11px;margin-top:2px}
+  .wrap{max-width:1120px;margin:20px auto;padding:0 18px}
+  .cards{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px}
+  .card{background:#18181f;border:1px solid #2a2a38;border-radius:10px;
+        padding:14px 18px;flex:1;min-width:200px}
+  .card h3{font-size:11px;text-transform:uppercase;letter-spacing:.05em;
+           color:#6b6b80;margin-bottom:10px}
+  .metric{display:flex;justify-content:space-between;margin:5px 0;font-size:12px}
+  .metric b{color:#fff}
+  .good{color:#6ee7b7}.mid{color:#fcd34d}.bad{color:#f87171}
+  table{width:100%;border-collapse:collapse;background:#18181f;
+        border:1px solid #2a2a38;border-radius:10px;overflow:hidden}
+  th,td{padding:9px 10px;text-align:center;border-bottom:1px solid #23232e}
+  th{background:#1d1d26;color:#8a8a9a;font-size:11px;text-transform:uppercase}
+  td.match{text-align:left;font-weight:600;white-space:nowrap}
+  tr:last-child td{border-bottom:none}
+  .bar{display:flex;height:18px;border-radius:4px;overflow:hidden;min-width:120px}
+  .bA{background:#2563eb}.bB{background:#dc2626}
+  .bar span{font-size:10px;line-height:18px;color:#fff;text-align:center}
+  .pick{font-weight:700;padding:2px 8px;border-radius:5px;background:#23232e;
+        color:#cbd5e1}
+  .edgepos{color:#6ee7b7}.edgeneg{color:#f87171}
+  .hit{color:#6ee7b7;font-weight:700}.miss{color:#f87171;font-weight:700}
+  .val{background:#0a2e20;color:#6ee7b7;font-weight:700;padding:2px 7px;
+       border-radius:5px;font-size:11px}
+  .small{color:#6b6b80;font-size:11px}
+  select#tour{background:#23232e;color:#e2e2e8;border:1px solid #2a2a38;
+       border-radius:7px;padding:7px 10px;font-size:13px;cursor:pointer;
+       min-width:230px;font-family:inherit}
+  .warm{background:#1d1d26;border:1px solid #2a2a38;border-radius:10px;
+       padding:30px;text-align:center;color:#8a8a9a}
+  .spin{display:inline-block;width:14px;height:14px;border:2px solid #3a3a48;
+       border-top-color:#6ee7b7;border-radius:50%;animation:s 1s linear infinite;
+       vertical-align:middle;margin-right:8px}
+  @keyframes s{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <h1>🎾 Tennis Match Predictor</h1>
+      <div class="sub" id="sub">loading…</div>
+    </div>
+    <div style="display:flex;align-items:center;gap:14px">
+      <select id="tour" onchange="onPick()"></select>
+      <div class="sub" id="gen"></div>
+    </div>
+  </div>
+  <div class="wrap"><div id="content"><p class="small">Fetching…</p></div></div>
+
+<script>
+let STATE = {payload:null, sel:null};
+function pct(x){ return (x*100).toFixed(0)+"%"; }
+function gAcc(v){ return v>=0.66?"good":v>=0.55?"mid":"bad"; }   // 50% = coin flip
+function gLL(v){ return v<0.62?"good":v<0.69?"mid":"bad"; }       // 0.693 = random
+
+function fmtWhen(iso){
+  if(!iso) return '<span class="small">—</span>';
+  const d=new Date(iso);
+  if(isNaN(d.getTime())) return '<span class="small">—</span>';
+  // Rendered in the VIEWER's own local timezone.
+  const s=d.toLocaleString([], {weekday:'short', day:'2-digit',
+    month:'short', hour:'2-digit', minute:'2-digit'});
+  return `<span title="${iso} (UTC)">${s}</span>`;
+}
+function bar(pa, pb){
+  return `<div class="bar" title="A ${pct(pa)} / B ${pct(pb)}">
+    <span class="bA" style="width:${pa*100}%">${pct(pa)}</span>
+    <span class="bB" style="width:${pb*100}%">${pct(pb)}</span></div>`;
+}
+function sCard(name,s){
+  if(!s||!s.n) return "";
+  return `<div class="card"><h3>${name}</h3>
+    <div class="metric"><span>Matches</span><b>${s.n}</b></div>
+    <div class="metric"><span>Accuracy</span><b class="${gAcc(s.accuracy)}">${(s.accuracy*100).toFixed(1)}%</b></div>
+    <div class="metric"><span>Log-loss</span><b class="${gLL(s.log_loss)}">${s.log_loss}</b></div>
+    <div class="metric"><span>Brier</span><b>${s.brier}</b></div></div>`;
+}
+function allValue(tours){
+  const o=[];
+  tours.forEach(t=>(t.predictions||[]).forEach(p=>{
+    if(p.value) o.push(Object.assign({_t:t.name},p));}));
+  o.sort((a,b)=>(b.edge||0)-(a.edge||0));
+  return o;
+}
+function onPick(){ STATE.sel=document.getElementById("tour").value; draw(); }
+
+function populate(tours){
+  const sel=document.getElementById("tour");
+  const nv=allValue(tours).length;
+  const nr=(STATE.payload.results&&STATE.payload.results.summary.resolved)||0;
+  const dflt=STATE.sel||(nv?"__value__":(tours[0]||{}).id);
+  sel.innerHTML=[
+    `<option value="__value__">★ Value picks — all tours (${nv})</option>`,
+    `<option value="__results__">✅ Results — track record (${nr})</option>`]
+    .concat(tours.map(t=>`<option value="${t.id}">${t.name} (${t.predictions.length})</option>`))
+    .join("");
+  const ids=["__value__","__results__"].concat(tours.map(t=>t.id));
+  sel.value=ids.includes(dflt)?dflt:ids[0];
+  STATE.sel=sel.value;
+}
+
+function render(d){
+  if(d.error){document.getElementById("content").innerHTML=
+    `<div class="warm">Error: ${d.error}</div>`;return;}
+  if(d.status==="warming up"||!d.tours||!d.tours.length){
+    document.getElementById("sub").textContent="building predictions…";
+    document.getElementById("content").innerHTML=
+      `<div class="warm"><span class="spin"></span>First build in progress —
+       ATP + WTA, ~10-20s. Fills in automatically.</div>`;return;}
+  STATE.payload=d;
+  document.getElementById("gen").textContent="built "+(d.built_at||d.generated||"");
+  populate(d.tours); draw();
+}
+
+function draw(){
+  const d=STATE.payload; if(!d) return;
+  if(STATE.sel==="__value__") return drawValue(d);
+  if(STATE.sel==="__results__") return drawResults(d);
+  const t=d.tours.find(x=>x.id===STATE.sel)||d.tours[0]; if(!t) return;
+  const m=t.meta;
+  document.getElementById("sub").textContent=
+    `${t.name} · assumed surface: ${m.surface_assumed} · trained on ${m.trained_matches} matches (${m.years.length} yrs)`;
+  const cards=`<div class="cards">
+    ${sCard("Elo backtest "+ (m.backtest_year||""), t.backtest)}
+    <div class="card"><h3>Reading this</h3><div class="small">
+      Backtest = walk-forward over ${m.backtest_year} (model only saw earlier
+      matches). Tennis is 2-outcome so random ≈ 50% acc / 0.693 log-loss.
+      Surface assumed from recent results — odds API gives no surface.</div></div>
+    <div class="card"><h3>Odds</h3><div class="small">${m.odds_status}</div></div>
+  </div>`;
+  const rows=t.predictions.map(p=>{
+    const mk=p.market;
+    let edge=`<span class="small">—</span>`;
+    if(p.edge!==undefined&&p.edge!==null){
+      const c=p.edge>=0?'edgepos':'edgeneg', s=p.edge>=0?'+':'';
+      edge=`<span class="${c}">${s}${(p.edge*100).toFixed(1)}%</span>`+
+           (p.value?` <span class="val">VALUE</span>`:'');
+    }
+    return `<tr>
+      <td class="small" style="white-space:nowrap">${fmtWhen(p.start)}</td>
+      <td class="match">${p.player_a} <span class="small">v</span> ${p.player_b}</td>
+      <td>${bar(p.p_a,p.p_b)}</td>
+      <td><span class="pick">${p.pick===p.player_a?'A':'B'}</span> ${p.pick}</td>
+      <td>${mk?bar(mk.a,mk.b)+`<div class="small">${mk.books} books</div>`:'<span class="small">—</span>'}</td>
+      <td>${edge}</td></tr>`;}).join("");
+  document.getElementById("content").innerHTML=cards+`
+    <div class="small" style="margin:6px 2px 12px">A = first player, B = second ·
+      Model = surface Elo · Market = de-vigged odds · Edge = model − market on pick ·
+      VALUE = model & bookmakers pick the SAME player AND |edge| ≤ 5% (consensus, not a tip)</div>
+    <table><thead><tr><th style="text-align:left">When (your time)</th>
+      <th style="text-align:left">Match</th>
+      <th>Model P(A / B)</th><th>Pick</th><th>Market P(A / B)</th><th>Edge</th>
+      </tr></thead><tbody>${rows||'<tr><td colspan="6" class="small">No upcoming matches with odds.</td></tr>'}</tbody></table>`;
+}
+
+function drawValue(d){
+  document.getElementById("sub").textContent=
+    "VALUE picks across ATP + WTA — model & bookmakers pick the same player and agree within ±5%";
+  const v=allValue(d.tours);
+  const rows=v.map(p=>{
+    const c=p.edge>=0?'edgepos':'edgeneg', s=p.edge>=0?'+':'';
+    return `<tr>
+    <td class="small">${p._t}</td>
+    <td class="small" style="white-space:nowrap">${fmtWhen(p.start)}</td>
+    <td class="match">${p.player_a} <span class="small">v</span> ${p.player_b}</td>
+    <td>${p.pick}</td>
+    <td>${pct(p.p_pick)}</td>
+    <td><span class="${c}">${s}${(p.edge*100).toFixed(1)}%</span> <span class="val">VALUE</span></td>
+    <td class="small">${p.surface}</td></tr>`;}).join("");
+  document.getElementById("content").innerHTML=`
+    <div class="cards"><div class="card" style="flex:1"><h3>What this is</h3>
+    <div class="small">Every upcoming match where the model and the bookmakers
+    pick the <b>same player</b> AND the edge (model − market on that pick) sits
+    inside <b>±5%</b>. These are consensus picks — both signals point the same
+    way without a large disagreement. Not tips; lower edge = tighter agreement.</div>
+    </div></div>
+    <table><thead><tr><th style="text-align:left">Tour</th>
+    <th style="text-align:left">When (your time)</th>
+    <th style="text-align:left">Match</th><th>Pick</th><th>Model</th><th>Edge</th><th>Surface</th>
+    </tr></thead><tbody>${rows||'<tr><td colspan="7" class="small">No value picks right now.</td></tr>'}</tbody></table>`;
+}
+
+function drawResults(d){
+  const R=d.results||{summary:{},recent:[]}, s=R.summary||{};
+  document.getElementById("sub").textContent=
+    "Track record — predictions scored AFTER matches finished (the honest test)";
+  if(!s.resolved){
+    document.getElementById("content").innerHTML=
+      `<div class="warm">No finished predictions yet. Upcoming picks are being
+      logged now — once those matches play they'll appear here scored.
+      <div class="small" style="margin-top:8px">Pending: ${s.pending||0}</div></div>`;
+    return;}
+  const mvm=s.with_market?`<div class="card"><h3>Model vs Market</h3>
+    <div class="metric"><span>Matches</span><b>${s.with_market}</b></div>
+    <div class="metric"><span>Model</span><b class="${gAcc(s.model_acc_vs_market)}">${(s.model_acc_vs_market*100).toFixed(1)}%</b></div>
+    <div class="metric"><span>Market</span><b>${(s.market_acc*100).toFixed(1)}%</b></div></div>`:"";
+  const vb=s.value_bets?`<div class="card"><h3>VALUE picks</h3>
+    <div class="metric"><span>Settled</span><b>${s.value_bets}</b></div>
+    <div class="metric"><span>Won</span><b class="${gAcc(s.value_acc)}">${(s.value_acc*100).toFixed(1)}%</b></div></div>`:"";
+  const cards=`<div class="cards">
+    <div class="card"><h3>Forward test</h3>
+    <div class="metric"><span>Settled</span><b>${s.resolved}</b></div>
+    <div class="metric"><span>Pending</span><b>${s.pending}</b></div>
+    <div class="metric"><span>Accuracy</span><b class="${gAcc(s.accuracy)}">${(s.accuracy*100).toFixed(1)}%</b></div>
+    <div class="metric"><span>Log-loss</span><b class="${gLL(s.log_loss)}">${s.log_loss}</b></div></div>
+    ${mvm}${vb}
+    <div class="card"><h3>What this is</h3><div class="small">Real predictions
+    scored after play. If Model accuracy is below Market accuracy, the
+    bookmakers beat the model (the expected result).</div></div></div>`;
+  const rows=(R.recent||[]).map(r=>`<tr>
+    <td class="small">${r.tour.toUpperCase()}</td>
+    <td class="match">${r.a} <span class="small">v</span> ${r.b}</td>
+    <td>${r.pick}</td>
+    <td class="${r.correct?'hit':'miss'}">${r.correct?'✓':'✗'}</td>
+    <td>${r.winner||''}</td>
+    <td class="small">${r.value?'<span class="val">VALUE</span>':''}</td>
+    <td class="small">${r.surface||''}</td></tr>`).join("");
+  document.getElementById("content").innerHTML=cards+`
+    <table><thead><tr><th>Tour</th><th style="text-align:left">Match</th>
+    <th>Pick</th><th>Hit</th><th>Winner</th><th>Value?</th><th>Surface</th>
+    </tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function load(){
+  fetch("/api/data").then(r=>r.json()).then(d=>{
+    render(d);
+    const warm=(d.status==="warming up"||!d.tours||!d.tours.length);
+    clearInterval(window._t);
+    window._t=setInterval(load, warm?6000:60000);
+  }).catch(e=>{document.getElementById("content").innerHTML=
+    `<div class="warm">Failed to load: ${e}</div>`;});
+}
+load();
+</script>
+</body>
+</html>
