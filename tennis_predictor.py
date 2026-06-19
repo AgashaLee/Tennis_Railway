@@ -875,11 +875,26 @@ def _whop_exchange_code(code, code_verifier):
 
 
 def _whop_user_info(access_token):
-    req = urllib.request.Request(
-        _WHOP_USER_URL,
-        headers={"Authorization": f"Bearer {access_token}"})
-    with urllib.request.urlopen(req, timeout=15) as r:
-        return json.loads(r.read())
+    # Try the v5 endpoint first; if that 404s, fall back to a couple of
+    # known alternatives. Surface the real Whop error body on failure.
+    candidates = [
+        _WHOP_USER_URL,                              # /api/v5/users/me
+        "https://api.whop.com/api/v5/me",
+        "https://api.whop.com/oauth/userinfo",       # OIDC standard
+    ]
+    errors = []
+    for url in candidates:
+        req = urllib.request.Request(
+            url, headers={"Authorization": f"Bearer {access_token}"})
+        try:
+            with urllib.request.urlopen(req, timeout=15) as r:
+                return json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace")
+            print(f"  whop user info {url} -> {e.code}: {body[:300]}")
+            errors.append(f"{url} -> {e.code}: {body[:200]}")
+    raise RuntimeError(
+        "Whop user-info call failed on all endpoints:\n" + "\n".join(errors))
 
 
 def _whop_has_active_membership(user_id):
@@ -1122,8 +1137,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             user = _whop_user_info(access_token)
         except Exception as e:
-            print(f"  user info failed: {repr(e)[:200]}")
-            return self._send(500, b"Auth failed (user info)", "text/plain")
+            print(f"  user info failed: {repr(e)[:400]}")
+            msg = f"Auth failed (user info).\n\n{str(e)[:800]}".encode()
+            return self._send(500, msg, "text/plain; charset=utf-8")
 
         # Whop's response shape can vary; try the common keys.
         user_id = (user.get("id") or user.get("user_id")
