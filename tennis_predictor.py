@@ -813,7 +813,9 @@ def _whop_authorize_url(state, code_challenge):
         "response_type":         "code",
         "client_id":             WHOP_CLIENT_ID,
         "redirect_uri":          WHOP_REDIRECT_URI,
-        "scope":                 "member:basic:read",
+        # openid is required by Whop's /oauth/userinfo endpoint.
+        # member:basic:read is our app's permission for user identity.
+        "scope":                 "openid member:basic:read",
         "state":                 state,
         "code_challenge":        code_challenge,
         "code_challenge_method": "S256",
@@ -878,9 +880,9 @@ def _whop_user_info(access_token):
     # Try the v5 endpoint first; if that 404s, fall back to a couple of
     # known alternatives. Surface the real Whop error body on failure.
     candidates = [
+        "https://api.whop.com/oauth/userinfo",       # OIDC standard - works
         _WHOP_USER_URL,                              # /api/v5/users/me
         "https://api.whop.com/api/v5/me",
-        "https://api.whop.com/oauth/userinfo",       # OIDC standard
     ]
     errors = []
     for url in candidates:
