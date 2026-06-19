@@ -1145,16 +1145,22 @@ class Handler(BaseHTTPRequestHandler):
             msg = f"Auth failed (user info).\n\n{str(e)[:800]}".encode()
             return self._send(500, msg, "text/plain; charset=utf-8")
 
-        # Whop's response shape can vary; try the common keys.
-        user_id = (user.get("id") or user.get("user_id")
+        # Whop's response shape varies by endpoint. OIDC /oauth/userinfo
+        # uses `sub` (subject claim). v5 endpoints use `id` or `user_id`.
+        user_id = (user.get("sub")
+                   or user.get("id")
+                   or user.get("user_id")
                    or (user.get("data") or {}).get("id") or "")
-        username = (user.get("username") or user.get("name")
+        username = (user.get("name")
+                    or user.get("preferred_username")
+                    or user.get("username")
                     or (user.get("data") or {}).get("username") or user_id)
 
         if not user_id:
-            print(f"  user info had no id: {str(user)[:200]}")
-            return self._send(500, b"User ID not found in Whop response",
-                              "text/plain")
+            print(f"  user info had no id: {str(user)[:400]}")
+            msg = ("User ID not found in Whop response.\n\n"
+                   f"Response was: {str(user)[:500]}").encode()
+            return self._send(500, msg, "text/plain; charset=utf-8")
 
         if not _whop_has_active_membership(user_id):
             body = _gate_page(
