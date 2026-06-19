@@ -822,19 +822,56 @@ def _whop_authorize_url(state, code_challenge):
 
 
 def _whop_exchange_code(code, code_verifier):
-    payload = json.dumps({
+    # Try the standard OAuth 2.0 confidential-client shape first:
+    # form-urlencoded body + HTTP Basic auth (client_id:client_secret).
+    # Whop's docs show JSON body, but most OAuth providers expect form
+    # encoding for token exchange. We fall back to JSON if Basic auth fails.
+    body = _urlparse.urlencode({
         "grant_type":    "authorization_code",
         "code":          code,
         "redirect_uri":  WHOP_REDIRECT_URI,
-        "client_id":     WHOP_CLIENT_ID,
-        "client_secret": WHOP_CLIENT_SECRET,
         "code_verifier": code_verifier,
     }).encode()
+    basic = _base64.b64encode(
+        f"{WHOP_CLIENT_ID}:{WHOP_CLIENT_SECRET}".encode()).decode()
     req = urllib.request.Request(
-        _WHOP_TOKEN_URL, data=payload,
-        headers={"Content-Type": "application/json"}, method="POST")
-    with urllib.request.urlopen(req, timeout=15) as r:
-        return json.loads(r.read())
+        _WHOP_TOKEN_URL, data=body,
+        headers={
+            "Content-Type":  "application/x-www-form-urlencoded",
+            "Accept":        "application/json",
+            "Authorization": f"Basic {basic}",
+        }, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        err_body = e.read().decode("utf-8", errors="replace")
+        print(f"  whop token endpoint {e.code} (basic auth): "
+              f"{err_body[:400]}")
+        # Fallback: JSON body with client_secret in payload (Whop docs style)
+        try:
+            json_payload = json.dumps({
+                "grant_type":    "authorization_code",
+                "code":          code,
+                "redirect_uri":  WHOP_REDIRECT_URI,
+                "client_id":     WHOP_CLIENT_ID,
+                "client_secret": WHOP_CLIENT_SECRET,
+                "code_verifier": code_verifier,
+            }).encode()
+            req2 = urllib.request.Request(
+                _WHOP_TOKEN_URL, data=json_payload,
+                headers={"Content-Type": "application/json"},
+                method="POST")
+            with urllib.request.urlopen(req2, timeout=15) as r:
+                return json.loads(r.read())
+        except urllib.error.HTTPError as e2:
+            err_body2 = e2.read().decode("utf-8", errors="replace")
+            print(f"  whop token endpoint {e2.code} (json fallback): "
+                  f"{err_body2[:400]}")
+            raise RuntimeError(
+                f"Whop token exchange failed. "
+                f"Basic auth -> {e.code}: {err_body[:200]}. "
+                f"JSON fallback -> {e2.code}: {err_body2[:200]}")
 
 
 def _whop_user_info(access_token):
@@ -1073,9 +1110,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             tokens = _whop_exchange_code(code, verifier)
         except Exception as e:
-            print(f"  token exchange failed: {repr(e)[:200]}")
-            return self._send(500, b"Auth failed (token exchange)",
-                              "text/plain")
+            print(f"  token exchange failed: {repr(e)[:400]}")
+            msg = f"Auth failed (token exchange).\n\n{str(e)[:600]}".encode()
+            return self._send(500, msg, "text/plain; charset=utf-8")
 
         access_token = tokens.get("access_token")
         if not access_token:
