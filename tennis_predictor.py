@@ -808,7 +808,7 @@ def _pkce_pair():
     return verifier, challenge
 
 
-def _whop_authorize_url(state, code_challenge):
+def _whop_authorize_url(state, code_challenge, nonce):
     qs = _urlparse.urlencode({
         "response_type":         "code",
         "client_id":             WHOP_CLIENT_ID,
@@ -817,6 +817,7 @@ def _whop_authorize_url(state, code_challenge):
         # member:basic:read is our app's permission for user identity.
         "scope":                 "openid member:basic:read",
         "state":                 state,
+        "nonce":                 nonce,    # required by OIDC for openid scope
         "code_challenge":        code_challenge,
         "code_challenge_method": "S256",
     })
@@ -1080,8 +1081,9 @@ class Handler(BaseHTTPRequestHandler):
         if not WHOP_ENABLED:
             return self._send(503, b"OAuth not configured", "text/plain")
         state = _secrets.token_urlsafe(16)
+        nonce = _secrets.token_urlsafe(16)
         verifier, challenge = _pkce_pair()
-        url = _whop_authorize_url(state, challenge)
+        url = _whop_authorize_url(state, challenge, nonce)
         cookies = [
             ("Set-Cookie",
              f"tp_oauth_state={state}; Path=/; HttpOnly; Max-Age=600; "
