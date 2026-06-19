@@ -26,11 +26,14 @@ import glob
 import json
 import math
 import os
+import secrets as _secrets
 import threading
 import time
 import urllib.error
+import urllib.parse as _urlparse
 import urllib.request
 from datetime import datetime, timedelta
+from http.cookies import SimpleCookie as _SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # ═══════════════════════════════════════════════════════════
@@ -765,6 +768,156 @@ def build_payload(cfg):
 
 
 # ═══════════════════════════════════════════════════════════
+# WHOP OAUTH GATING
+# Active only when WHOP_* env vars are all set (e.g. on Railway).
+# Locally, with no env vars, the dashboard stays open as before.
+# ═══════════════════════════════════════════════════════════
+
+WHOP_CLIENT_ID     = os.environ.get("WHOP_CLIENT_ID", "")
+WHOP_CLIENT_SECRET = os.environ.get("WHOP_CLIENT_SECRET", "")
+WHOP_API_KEY       = os.environ.get("WHOP_API_KEY", "")
+WHOP_PRODUCT_ID    = os.environ.get("WHOP_PRODUCT_ID", "")
+WHOP_REDIRECT_URI  = os.environ.get("WHOP_REDIRECT_URI", "")
+WHOP_PRODUCT_URL   = os.environ.get(
+    "WHOP_PRODUCT_URL",
+    "https://whop.com/tennis-insights-1cb2/tennis-predictor")
+
+WHOP_ENABLED = bool(WHOP_CLIENT_ID and WHOP_CLIENT_SECRET
+                    and WHOP_API_KEY and WHOP_PRODUCT_ID
+                    and WHOP_REDIRECT_URI)
+
+_WHOP_AUTH_URL    = "https://api.whop.com/oauth/authorize"
+_WHOP_TOKEN_URL   = "https://api.whop.com/oauth/token"
+_WHOP_USER_URL    = "https://api.whop.com/api/v5/users/me"
+_WHOP_MEMBERS_URL = "https://api.whop.com/api/v5/memberships"
+
+# In-memory session store: sid -> {user_id, username, expires}.
+# Wiped on every container restart — buyers re-login (5 seconds).
+_SESSIONS = {}
+_SESS_LOCK = threading.Lock()
+
+
+def _whop_authorize_url(state):
+    qs = _urlparse.urlencode({
+        "response_type": "code",
+        "client_id":     WHOP_CLIENT_ID,
+        "redirect_uri":  WHOP_REDIRECT_URI,
+        "scope":         "member:basic:read",
+        "state":         state,
+    })
+    return f"{_WHOP_AUTH_URL}?{qs}"
+
+
+def _whop_exchange_code(code):
+    payload = json.dumps({
+        "grant_type":    "authorization_code",
+        "code":          code,
+        "redirect_uri":  WHOP_REDIRECT_URI,
+        "client_id":     WHOP_CLIENT_ID,
+        "client_secret": WHOP_CLIENT_SECRET,
+    }).encode()
+    req = urllib.request.Request(
+        _WHOP_TOKEN_URL, data=payload,
+        headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return json.loads(r.read())
+
+
+def _whop_user_info(access_token):
+    req = urllib.request.Request(
+        _WHOP_USER_URL,
+        headers={"Authorization": f"Bearer {access_token}"})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return json.loads(r.read())
+
+
+def _whop_has_active_membership(user_id):
+    qs = _urlparse.urlencode({
+        "user_id":    user_id,
+        "product_id": WHOP_PRODUCT_ID,
+        "status":     "active",
+    })
+    req = urllib.request.Request(
+        f"{_WHOP_MEMBERS_URL}?{qs}",
+        headers={"Authorization": f"Bearer {WHOP_API_KEY}"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read())
+        items = data.get("data") if isinstance(data, dict) else data
+        return bool(items)
+    except Exception as e:
+        # Fail closed: if the API check fails, deny access.
+        print(f"  whop membership check failed: {repr(e)[:160]}")
+        return False
+
+
+def _new_session(user_id, username):
+    sid = _secrets.token_urlsafe(32)
+    with _SESS_LOCK:
+        _SESSIONS[sid] = {
+            "user_id":  user_id,
+            "username": username,
+            "expires":  datetime.now() + timedelta(hours=24),
+        }
+    return sid
+
+
+def _get_session(sid):
+    if not sid:
+        return None
+    with _SESS_LOCK:
+        s = _SESSIONS.get(sid)
+        if s and s["expires"] < datetime.now():
+            del _SESSIONS[sid]
+            return None
+        return s
+
+
+_GATE_HTML = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tennis Predictor</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  body{font-family:-apple-system,system-ui,Segoe UI,sans-serif;
+       background:#1E3D2A;color:#F4F0DE;margin:0;min-height:100vh;
+       display:flex;align-items:center;justify-content:center;padding:2rem}
+  .card{background:#2B5C3A;padding:2.8rem 2.4rem;border-radius:16px;
+        max-width:480px;text-align:center;box-sizing:border-box;width:100%}
+  h1{font-size:1.55rem;margin:0 0 .6rem;color:#E2DC58}
+  p{color:#97B89D;line-height:1.6;margin:0 0 1.5rem}
+  .btn{display:inline-block;background:#E2DC58;color:#1E3D2A;font-weight:600;
+       padding:.85rem 1.6rem;border-radius:10px;text-decoration:none;
+       margin:.3rem .25rem}
+  .btn.alt{background:transparent;color:#F4F0DE;border:1px solid #97B89D}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>{TITLE}</h1>
+  <p>{MESSAGE}</p>
+  <a class="btn" href="{PRIMARY_HREF}">{PRIMARY_LABEL}</a>
+  <a class="btn alt" href="{SECONDARY_HREF}">{SECONDARY_LABEL}</a>
+</div>
+</body>
+</html>
+"""
+
+
+def _gate_page(title, message, primary_label, primary_href,
+               secondary_label, secondary_href):
+    html = (_GATE_HTML
+            .replace("{TITLE}", title)
+            .replace("{MESSAGE}", message)
+            .replace("{PRIMARY_LABEL}", primary_label)
+            .replace("{PRIMARY_HREF}", primary_href)
+            .replace("{SECONDARY_LABEL}", secondary_label)
+            .replace("{SECONDARY_HREF}", secondary_href))
+    return html.encode("utf-8")
+
+
+# ═══════════════════════════════════════════════════════════
 # SERVER (background builder + instant-serve cache)
 # ═══════════════════════════════════════════════════════════
 
@@ -792,18 +945,154 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
-    def _send(self, code, body, ctype):
+    def _send(self, code, body, ctype, extra_headers=None):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
         self.send_header("Pragma", "no-cache")
         self.send_header("Expires", "0")
+        if extra_headers:
+            for k, v in extra_headers:
+                self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
 
+    def _redirect(self, url, extra_headers=None):
+        self.send_response(302)
+        self.send_header("Location", url)
+        self.send_header("Content-Length", "0")
+        if extra_headers:
+            for k, v in extra_headers:
+                self.send_header(k, v)
+        self.end_headers()
+
+    def _cookie(self, name):
+        ck_header = self.headers.get("Cookie", "")
+        if not ck_header:
+            return None
+        try:
+            cookie = _SimpleCookie()
+            cookie.load(ck_header)
+        except Exception:
+            return None
+        m = cookie.get(name)
+        return m.value if m else None
+
     def do_GET(self):
-        if self.path.startswith("/api/data"):
+        parsed = _urlparse.urlparse(self.path)
+        path = parsed.path
+
+        # OAuth routes
+        if path == "/whop/login":
+            return self._handle_login()
+        if path == "/whop/callback":
+            return self._handle_callback(parsed.query)
+        if path == "/whop/logout":
+            return self._handle_logout()
+
+        # If OAuth is not configured (e.g. local dev), keep the old open
+        # behaviour. On Railway with all WHOP_* set, the gate is on.
+        if not WHOP_ENABLED:
+            return self._serve_protected(path)
+
+        if not _get_session(self._cookie("tp_session")):
+            body = _gate_page(
+                "Members only",
+                "The Tennis Predictor dashboard is for active subscribers. "
+                "Subscribe on Whop to unlock daily picks, surface-aware Elo, "
+                "and the live track record.",
+                "Subscribe on Whop", WHOP_PRODUCT_URL,
+                "I already subscribed — log in", "/whop/login")
+            return self._send(200, body, "text/html; charset=utf-8")
+
+        return self._serve_protected(path)
+
+    def _handle_login(self):
+        if not WHOP_ENABLED:
+            return self._send(503, b"OAuth not configured", "text/plain")
+        state = _secrets.token_urlsafe(16)
+        url = _whop_authorize_url(state)
+        cookie = (f"tp_oauth_state={state}; Path=/; HttpOnly; Max-Age=600; "
+                  f"SameSite=Lax; Secure")
+        self._redirect(url, extra_headers=[("Set-Cookie", cookie)])
+
+    def _handle_callback(self, query):
+        if not WHOP_ENABLED:
+            return self._send(503, b"OAuth not configured", "text/plain")
+        params = _urlparse.parse_qs(query)
+        code = (params.get("code") or [""])[0]
+        state = (params.get("state") or [""])[0]
+        if not code:
+            return self._send(400, b"Missing authorization code", "text/plain")
+
+        expected_state = self._cookie("tp_oauth_state")
+        if not expected_state or expected_state != state:
+            return self._send(403,
+                              b"State mismatch (CSRF check failed). "
+                              b"Try logging in again.",
+                              "text/plain")
+
+        try:
+            tokens = _whop_exchange_code(code)
+        except Exception as e:
+            print(f"  token exchange failed: {repr(e)[:200]}")
+            return self._send(500, b"Auth failed (token exchange)",
+                              "text/plain")
+
+        access_token = tokens.get("access_token")
+        if not access_token:
+            return self._send(500, b"No access token returned",
+                              "text/plain")
+
+        try:
+            user = _whop_user_info(access_token)
+        except Exception as e:
+            print(f"  user info failed: {repr(e)[:200]}")
+            return self._send(500, b"Auth failed (user info)", "text/plain")
+
+        # Whop's response shape can vary; try the common keys.
+        user_id = (user.get("id") or user.get("user_id")
+                   or (user.get("data") or {}).get("id") or "")
+        username = (user.get("username") or user.get("name")
+                    or (user.get("data") or {}).get("username") or user_id)
+
+        if not user_id:
+            print(f"  user info had no id: {str(user)[:200]}")
+            return self._send(500, b"User ID not found in Whop response",
+                              "text/plain")
+
+        if not _whop_has_active_membership(user_id):
+            body = _gate_page(
+                f"Welcome, {username}",
+                "We couldn't find an active Tennis Predictor subscription on "
+                "your Whop account. If you just subscribed, give it a few "
+                "seconds and try again.",
+                "Subscribe on Whop", WHOP_PRODUCT_URL,
+                "Try again", "/whop/login")
+            return self._send(200, body, "text/html; charset=utf-8")
+
+        sid = _new_session(user_id, username)
+        session_ck = (f"tp_session={sid}; Path=/; HttpOnly; Max-Age=86400; "
+                      f"SameSite=Lax; Secure")
+        state_clear = ("tp_oauth_state=; Path=/; HttpOnly; Max-Age=0; "
+                       "SameSite=Lax; Secure")
+        self._redirect("/", extra_headers=[
+            ("Set-Cookie", session_ck),
+            ("Set-Cookie", state_clear),
+        ])
+
+    def _handle_logout(self):
+        sid = self._cookie("tp_session")
+        if sid:
+            with _SESS_LOCK:
+                _SESSIONS.pop(sid, None)
+        clear = ("tp_session=; Path=/; HttpOnly; Max-Age=0; "
+                 "SameSite=Lax; Secure")
+        self._redirect("/", extra_headers=[("Set-Cookie", clear)])
+
+    def _serve_protected(self, path):
+        if path.startswith("/api/data"):
             with _LOCK:
                 payload, built = _CACHE["payload"], _CACHE["built_at"]
             if payload is None:
