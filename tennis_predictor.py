@@ -784,6 +784,15 @@ WHOP_PRODUCT_URL   = os.environ.get(
     "WHOP_PRODUCT_URL",
     "https://whop.com/tennis-insights-1cb2/tennis-predictor")
 
+# Manual allowlist of Whop user_ids granted access regardless of the API
+# check. Comma-separated. Use to onboard buyers while the membership API
+# is unreliable, or to grant comp access to yourself for testing.
+# e.g. WHOP_ALLOW_USERS="user_oBEsOzBhZi7iR,user_xxx"
+WHOP_ALLOW_USERS   = {
+    s.strip() for s in os.environ.get("WHOP_ALLOW_USERS", "").split(",")
+    if s.strip()
+}
+
 WHOP_ENABLED = bool(WHOP_CLIENT_ID and WHOP_CLIENT_SECRET
                     and WHOP_API_KEY and WHOP_PRODUCT_ID
                     and WHOP_REDIRECT_URI)
@@ -900,24 +909,59 @@ def _whop_user_info(access_token):
         "Whop user-info call failed on all endpoints:\n" + "\n".join(errors))
 
 
-def _whop_has_active_membership(user_id):
-    qs = _urlparse.urlencode({
+def _whop_has_active_membership(user_id, access_token=None):
+    # Fast-path: user is on the manual allowlist.
+    if user_id in WHOP_ALLOW_USERS:
+        print(f"  user {user_id} matched WHOP_ALLOW_USERS allowlist")
+        return True
+
+    # Whop's REST docs have been inconsistent; try multiple endpoint
+    # shapes and both auth modes. First success wins.
+    qs_user = _urlparse.urlencode({
         "user_id":    user_id,
         "product_id": WHOP_PRODUCT_ID,
         "status":     "active",
     })
-    req = urllib.request.Request(
-        f"{_WHOP_MEMBERS_URL}?{qs}",
-        headers={"Authorization": f"Bearer {WHOP_API_KEY}"})
-    try:
-        with urllib.request.urlopen(req, timeout=15) as r:
-            data = json.loads(r.read())
-        items = data.get("data") if isinstance(data, dict) else data
-        return bool(items)
-    except Exception as e:
-        # Fail closed: if the API check fails, deny access.
-        print(f"  whop membership check failed: {repr(e)[:160]}")
-        return False
+    qs_me = _urlparse.urlencode({
+        "product_id": WHOP_PRODUCT_ID,
+        "status":     "active",
+    })
+    tokens = []
+    if access_token:
+        tokens.append(("oauth", access_token))
+    if WHOP_API_KEY:
+        tokens.append(("apik", WHOP_API_KEY))
+
+    attempts = []
+    for label, tok in tokens:
+        attempts.extend([
+            (f"{_WHOP_MEMBERS_URL}?{qs_user}", tok, label),
+            (f"https://api.whop.com/api/v5/me/memberships?{qs_me}",
+             tok, label),
+            (f"https://api.whop.com/api/v2/memberships?{qs_user}",
+             tok, label),
+        ])
+
+    for url, tok, label in attempts:
+        req = urllib.request.Request(
+            url, headers={"Authorization": f"Bearer {tok}"})
+        try:
+            with urllib.request.urlopen(req, timeout=15) as r:
+                data = json.loads(r.read())
+            items = data.get("data") if isinstance(data, dict) else data
+            print(f"  membership check OK via {label} {url[:80]} "
+                  f"-> {len(items) if items else 0} items")
+            return bool(items)
+        except urllib.error.HTTPError as e:
+            err = e.read().decode("utf-8", errors="replace")[:120]
+            print(f"  membership {label} {url[:80]} -> "
+                  f"{e.code}: {err}")
+        except Exception as e:
+            print(f"  membership {label} {url[:80]} -> {repr(e)[:120]}")
+
+    # Fail closed.
+    print("  all membership check endpoints failed - denying access")
+    return False
 
 
 def _new_session(user_id, username):
@@ -1162,7 +1206,7 @@ class Handler(BaseHTTPRequestHandler):
                    f"Response was: {str(user)[:500]}").encode()
             return self._send(500, msg, "text/plain; charset=utf-8")
 
-        if not _whop_has_active_membership(user_id):
+        if not _whop_has_active_membership(user_id, access_token):
             body = _gate_page(
                 f"Welcome, {username}",
                 "We couldn't find an active Tennis Predictor subscription on "
