@@ -21,8 +21,10 @@ Honest note (unchanged from football): surface Elo is a decent tennis model
 but does NOT reliably beat the betting market. Insight tool, not profit.
 """
 
+import base64 as _base64
 import csv
 import glob
+import hashlib as _hashlib
 import json
 import math
 import os
@@ -797,24 +799,36 @@ _SESSIONS = {}
 _SESS_LOCK = threading.Lock()
 
 
-def _whop_authorize_url(state):
+def _pkce_pair():
+    """Generate a PKCE (verifier, challenge) pair. Whop's OAuth requires it
+    even on confidential apps."""
+    verifier = _secrets.token_urlsafe(48)
+    digest = _hashlib.sha256(verifier.encode()).digest()
+    challenge = _base64.urlsafe_b64encode(digest).decode().rstrip("=")
+    return verifier, challenge
+
+
+def _whop_authorize_url(state, code_challenge):
     qs = _urlparse.urlencode({
-        "response_type": "code",
-        "client_id":     WHOP_CLIENT_ID,
-        "redirect_uri":  WHOP_REDIRECT_URI,
-        "scope":         "member:basic:read",
-        "state":         state,
+        "response_type":         "code",
+        "client_id":             WHOP_CLIENT_ID,
+        "redirect_uri":          WHOP_REDIRECT_URI,
+        "scope":                 "member:basic:read",
+        "state":                 state,
+        "code_challenge":        code_challenge,
+        "code_challenge_method": "S256",
     })
     return f"{_WHOP_AUTH_URL}?{qs}"
 
 
-def _whop_exchange_code(code):
+def _whop_exchange_code(code, code_verifier):
     payload = json.dumps({
         "grant_type":    "authorization_code",
         "code":          code,
         "redirect_uri":  WHOP_REDIRECT_URI,
         "client_id":     WHOP_CLIENT_ID,
         "client_secret": WHOP_CLIENT_SECRET,
+        "code_verifier": code_verifier,
     }).encode()
     req = urllib.request.Request(
         _WHOP_TOKEN_URL, data=payload,
@@ -1012,15 +1026,32 @@ class Handler(BaseHTTPRequestHandler):
         if not WHOP_ENABLED:
             return self._send(503, b"OAuth not configured", "text/plain")
         state = _secrets.token_urlsafe(16)
-        url = _whop_authorize_url(state)
-        cookie = (f"tp_oauth_state={state}; Path=/; HttpOnly; Max-Age=600; "
-                  f"SameSite=Lax; Secure")
-        self._redirect(url, extra_headers=[("Set-Cookie", cookie)])
+        verifier, challenge = _pkce_pair()
+        url = _whop_authorize_url(state, challenge)
+        cookies = [
+            ("Set-Cookie",
+             f"tp_oauth_state={state}; Path=/; HttpOnly; Max-Age=600; "
+             f"SameSite=Lax; Secure"),
+            ("Set-Cookie",
+             f"tp_oauth_verifier={verifier}; Path=/; HttpOnly; Max-Age=600; "
+             f"SameSite=Lax; Secure"),
+        ]
+        self._redirect(url, extra_headers=cookies)
 
     def _handle_callback(self, query):
         if not WHOP_ENABLED:
             return self._send(503, b"OAuth not configured", "text/plain")
         params = _urlparse.parse_qs(query)
+
+        # Whop redirects here with ?error=... when authorize fails (denied
+        # consent, invalid params, etc.) — surface that to the user.
+        err = (params.get("error") or [""])[0]
+        if err:
+            desc = (params.get("error_description") or [""])[0]
+            print(f"  whop oauth error: {err} - {desc}")
+            msg = f"Auth error from Whop: {err}\n{desc}".encode()
+            return self._send(400, msg, "text/plain; charset=utf-8")
+
         code = (params.get("code") or [""])[0]
         state = (params.get("state") or [""])[0]
         if not code:
@@ -1033,8 +1064,14 @@ class Handler(BaseHTTPRequestHandler):
                               b"Try logging in again.",
                               "text/plain")
 
+        verifier = self._cookie("tp_oauth_verifier")
+        if not verifier:
+            return self._send(403,
+                              b"PKCE verifier missing - try logging in again.",
+                              "text/plain")
+
         try:
-            tokens = _whop_exchange_code(code)
+            tokens = _whop_exchange_code(code, verifier)
         except Exception as e:
             print(f"  token exchange failed: {repr(e)[:200]}")
             return self._send(500, b"Auth failed (token exchange)",
@@ -1077,9 +1114,12 @@ class Handler(BaseHTTPRequestHandler):
                       f"SameSite=Lax; Secure")
         state_clear = ("tp_oauth_state=; Path=/; HttpOnly; Max-Age=0; "
                        "SameSite=Lax; Secure")
+        verifier_clear = ("tp_oauth_verifier=; Path=/; HttpOnly; Max-Age=0; "
+                          "SameSite=Lax; Secure")
         self._redirect("/", extra_headers=[
             ("Set-Cookie", session_ck),
             ("Set-Cookie", state_clear),
+            ("Set-Cookie", verifier_clear),
         ])
 
     def _handle_logout(self):
