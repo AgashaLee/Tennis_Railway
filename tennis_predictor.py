@@ -43,7 +43,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 # ═══════════════════════════════════════════════════════════
 
 CONFIG = {
-    "data_dir":            "data",
+    # Where match CSVs and the predictions log live.
+    # On Railway: set DATA_DIR=/data to point at a mounted persistent volume
+    # so the predictions log survives redeploys.
+    "data_dir":            os.environ.get("DATA_DIR") or "data",
 
     # Tours (switchable in the dashboard, like football leagues).
     # The Odds API has NO generic tennis_atp/tennis_wta key — tennis is
@@ -89,6 +92,25 @@ CONFIG = {
 def _resolve_data_dir(cfg):
     name = cfg["data_dir"]
     here = os.path.dirname(os.path.abspath(__file__))
+    if os.path.isabs(name):
+        # Volume-mounted (Railway). Ensure it exists and seed with bundled
+        # CSVs on first run so the model has historical data to train on.
+        os.makedirs(name, exist_ok=True)
+        bundled = os.path.join(here, "data")
+        if os.path.isdir(bundled):
+            for fname in os.listdir(bundled):
+                dst = os.path.join(name, fname)
+                if os.path.exists(dst):
+                    continue
+                src = os.path.join(bundled, fname)
+                try:
+                    with open(src, "rb") as r, open(dst, "wb") as w:
+                        w.write(r.read())
+                    print(f"  seeded {fname} to {name}")
+                except OSError as e:
+                    print(f"  seed {fname} failed: {repr(e)[:80]}")
+        cfg["data_dir"] = name
+        return
     for cand in (name, os.path.join(here, name),
                  os.path.join(here, "..", name)):
         if os.path.isdir(cand):
