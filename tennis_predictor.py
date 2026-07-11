@@ -93,22 +93,48 @@ def _resolve_data_dir(cfg):
     name = cfg["data_dir"]
     here = os.path.dirname(os.path.abspath(__file__))
     if os.path.isabs(name):
-        # Volume-mounted (Railway). Ensure it exists and seed with bundled
-        # CSVs on first run so the model has historical data to train on.
+        # Volume-mounted (Railway). Seed with bundled CSVs (once), then keep
+        # them fresh by asking refresh_current_year() to re-download from
+        # Sackmann's repo. If the current-year CSV in the volume matches the
+        # bundled one byte-for-byte, it's a pristine seed that hasn't been
+        # refreshed yet — backdate so the next builder pass re-downloads it.
         os.makedirs(name, exist_ok=True)
         bundled = os.path.join(here, "data")
+        cur_yr = datetime.now().year
+
+        def backdate(path):
+            old = time.time() - 30 * 86400
+            try:
+                os.utime(path, (old, old))
+                return True
+            except OSError:
+                return False
+
         if os.path.isdir(bundled):
             for fname in os.listdir(bundled):
                 dst = os.path.join(name, fname)
-                if os.path.exists(dst):
-                    continue
                 src = os.path.join(bundled, fname)
-                try:
-                    with open(src, "rb") as r, open(dst, "wb") as w:
-                        w.write(r.read())
-                    print(f"  seeded {fname} to {name}")
-                except OSError as e:
-                    print(f"  seed {fname} failed: {repr(e)[:80]}")
+                is_current = str(cur_yr) in fname
+                if not os.path.exists(dst):
+                    try:
+                        with open(src, "rb") as r, open(dst, "wb") as w:
+                            w.write(r.read())
+                        if is_current:
+                            backdate(dst)
+                        print(f"  seeded {fname} to {name}")
+                    except OSError as e:
+                        print(f"  seed {fname} failed: {repr(e)[:80]}")
+                elif is_current:
+                    # File already exists — check if it's a pristine seed
+                    # copy (size matches bundled exactly). If so, force a
+                    # fresh refresh on the next builder pass.
+                    try:
+                        if os.path.getsize(dst) == os.path.getsize(src):
+                            if backdate(dst):
+                                print(f"  pristine seed detected for "
+                                      f"{fname} - forcing refresh")
+                    except OSError:
+                        pass
         cfg["data_dir"] = name
         return
     for cand in (name, os.path.join(here, name),
@@ -554,6 +580,10 @@ def _resolve(cfg, tour, matches):
     log = _load_log(cfg)
     pend = [(k, r) for k, r in log.items()
             if r.get("status") == "pending" and r.get("tour") == tour]
+    latest_result = max((m.date for m in matches), default=None)
+    latest_str = latest_result.strftime("%Y-%m-%d") if latest_result else "n/a"
+    print(f"  resolve {tour}: {len(pend)} pending, "
+          f"{len(matches)} results in current data (latest: {latest_str})")
     if not pend:
         return 0
 
@@ -613,6 +643,7 @@ def _resolve(cfg, tour, matches):
         changed += 1
     if changed:
         _save_log(cfg, log)
+    print(f"  resolve {tour}: {changed} newly resolved this pass")
     return changed
 
 
