@@ -689,12 +689,18 @@ def results_summary(cfg):
 
 def refresh_current_year(cfg):
     """Keep the track record working without manual fetches: re-download the
-    current-year CSV per tour if older than results_refresh_hours."""
+    current-year CSV per tour if older than results_refresh_hours.
+
+    Jeff Sackmann removed his original tennis_atp / tennis_wta GitHub repos
+    in 2026. We now pull from Aneeshers/tennis-sackmann-archive, a public
+    archival mirror that preserves the exact same file format. The archive
+    lags Sackmann's live updates by a few weeks — expect recent-tournament
+    matches to take longer to appear in the track record.
+    """
     yr = datetime.now().year
-    repos = {"atp": "tennis_atp", "wta": "tennis_wta"}
     for t in cfg["tours"]:
-        path = os.path.join(cfg["data_dir"],
-                            f"{t['prefix']}_matches_{yr}.csv")
+        pfx = t["prefix"]
+        path = os.path.join(cfg["data_dir"], f"{pfx}_matches_{yr}.csv")
         try:
             age_h = (datetime.now().timestamp()
                      - os.path.getmtime(path)) / 3600.0
@@ -702,17 +708,19 @@ def refresh_current_year(cfg):
                 continue
         except OSError:
             pass
-        url = (f"https://raw.githubusercontent.com/JeffSackmann/"
-               f"{repos[t['prefix']]}/master/{t['prefix']}_matches_{yr}.csv")
+        url = (f"https://raw.githubusercontent.com/Aneeshers/"
+               f"tennis-sackmann-archive/main/{pfx}/{pfx}_matches_{yr}.csv")
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "tp"})
             data = urllib.request.urlopen(req, timeout=30).read()
             if data.startswith(b"tourney_id"):
                 with open(path, "wb") as f:
                     f.write(data)
-                print(f"  refreshed {t['prefix']} {yr} results")
+                print(f"  refreshed {pfx} {yr} results ({len(data)} bytes)")
+            else:
+                print(f"  refresh {pfx} {yr}: unexpected format, skipping")
         except Exception as e:
-            print(f"  refresh {t['prefix']} {yr}: {repr(e)[:90]}")
+            print(f"  refresh {pfx} {yr}: {repr(e)[:90]}")
 
 
 # ═══════════════════════════════════════════════════════════
