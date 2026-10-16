@@ -445,6 +445,53 @@ def active_sport_keys(cfg, key, prefix):
             if s.get("active") and str(s.get("key", "")).startswith(pre)]
 
 
+def scores_results(cfg, key, sport_keys, surface):
+    """Completed matches from The Odds API /scores (last ~3 days) as TMatch
+    objects, so predictions grade within a day or two of the match finishing.
+
+    Sackmann's archive (used for Elo training) lags live results by weeks, so
+    on its own it can never score the current week. The Odds API reports each
+    finished match's SET counts under the SAME name spelling the predictions
+    were logged with, so the winner is exact and name-matching is trivial.
+    Winner = more sets; equal/missing counts (retirement, walkover, not yet
+    filled in) are skipped — they resolve on a later pass or stay pending."""
+    out = []
+    for sk in sport_keys:
+        url = (f"{cfg['odds_base']}/sports/{sk}/scores/"
+               f"?apiKey={key}&daysFrom=3")
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "tp"})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                events = json.loads(r.read())
+        except Exception as e:
+            print(f"  scores {sk}: {repr(e)[:80]}")
+            continue
+        for ev in events:
+            if not ev.get("completed"):
+                continue
+            sc = ev.get("scores") or []
+            if len(sc) != 2:
+                continue
+            try:
+                s0, s1 = int(sc[0].get("score")), int(sc[1].get("score"))
+            except (TypeError, ValueError):
+                continue
+            if s0 == s1:
+                continue                      # retirement / walkover / unknown
+            win, los = (sc[0], sc[1]) if s0 > s1 else (sc[1], sc[0])
+            w = (win.get("name") or "").strip()
+            l = (los.get("name") or "").strip()
+            if not w or not l:
+                continue
+            try:
+                dt = datetime.strptime((ev.get("commence_time") or "")[:10],
+                                       "%Y-%m-%d")
+            except ValueError:
+                continue
+            out.append(TMatch(dt, dt.year, surface, w, l))
+    return out
+
+
 def _market_two(event):
     """De-vigged P for the two players, averaged across bookmakers."""
     h, a = event.get("home_team"), event.get("away_team")
@@ -794,6 +841,17 @@ def _build_tour(cfg, tour):
     # Soonest match first (matches with no time go last).
     preds.sort(key=lambda r: r.get("start") or "9999")
     _log_predictions(cfg, tour["id"], preds)
+    # Grade against FRESH winners from The Odds API /scores (merged on top of
+    # Sackmann, which lags weeks), so the track record keeps up with play.
+    if key:
+        try:
+            fresh = scores_results(cfg, key, sport_keys, surface)
+            if fresh:
+                matches = sorted(matches + fresh, key=lambda m: m.date)
+                print(f"  {tour['id']}: +{len(fresh)} fresh results "
+                      f"from Odds /scores")
+        except Exception as e:
+            print(f"  {tour['id']} scores fetch failed: {repr(e)[:80]}")
     _resolve(cfg, tour["id"], matches)
 
     return {
