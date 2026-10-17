@@ -138,6 +138,7 @@ def simulate_match(pa, pb, best_of=3, n=20000, seed=20260101,
     straight = 0
     setscore = {}
     games_total = 0
+    ghist = {}
     over = {ln: 0 for ln in ou_lines}
     for _ in range(n):
         a_sets, b_sets, tg = _sim_match(pa, pb, best_of, rng)
@@ -148,6 +149,7 @@ def simulate_match(pa, pb, best_of=3, n=20000, seed=20260101,
         key = f"{a_sets}-{b_sets}"
         setscore[key] = setscore.get(key, 0) + 1
         games_total += tg
+        ghist[tg] = ghist.get(tg, 0) + 1
         for ln in ou_lines:
             if tg > ln:
                 over[ln] += 1
@@ -161,8 +163,15 @@ def simulate_match(pa, pb, best_of=3, n=20000, seed=20260101,
         "over_under": {ln: {"over": round(over[ln] / n, 3),
                             "under": round(1 - over[ln] / n, 3)}
                        for ln in ou_lines},
+        "games_dist": {g: round(c / n, 5) for g, c in sorted(ghist.items())},
         "n": n, "best_of": best_of,
     }
+
+
+def over_prob(games_dist, line):
+    """P(total games > line) from the simulated games distribution, for any
+    line the bookmaker offers (keys are ints)."""
+    return round(sum(p for g, p in games_dist.items() if g > line), 4)
 
 
 # ─────────────────────────────────────────────────────────────

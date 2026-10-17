@@ -43,6 +43,46 @@ import tennis_sim  # point-model markets (set score, O/U games)
 _SLAMS = ("australian_open", "french_open", "wimbledon", "us_open")
 
 
+def _market_totals(ev):
+    """Totals (total-games O/U) from The Odds API: the most-offered line, its
+    de-vigged Over probability (averaged per book), and best Over/Under odds."""
+    from collections import Counter
+    perbook, linecount = [], Counter()
+    for bk in ev.get("bookmakers", []):
+        for m in bk.get("markets", []):
+            if m.get("key") != "totals":
+                continue
+            oo = uo = pt = None
+            for o in m.get("outcomes", []):
+                if o.get("name") == "Over":
+                    oo, pt = o.get("price"), o.get("point")
+                elif o.get("name") == "Under":
+                    uo = o.get("price")
+            if oo and uo and pt is not None:
+                perbook.append((pt, oo, uo))
+                linecount[pt] += 1
+    if not linecount:
+        return None
+    line = linecount.most_common(1)[0][0]
+    rows = [(oo, uo) for (pt, oo, uo) in perbook if pt == line]
+    devig = [(1 / oo) / ((1 / oo) + (1 / uo)) for oo, uo in rows]
+    return {"line": line, "market_over": sum(devig) / len(devig),
+            "best_over": max(oo for oo, _ in rows),
+            "best_under": max(uo for _, uo in rows), "books": len(rows)}
+
+
+def _kelly(p, odds, cfg):
+    """Half-Kelly stake fraction (capped). 0 if no edge."""
+    b = odds - 1.0
+    if b <= 0:
+        return 0.0
+    f = (b * p - (1 - p)) / b
+    if f <= 0:
+        return 0.0
+    return round(min(f * cfg.get("kelly_fraction", 0.5),
+                     cfg.get("kelly_max", 0.05)), 4)
+
+
 def _compact_markets(m):
     """Reduce the simulator output to the few fields the dashboard shows."""
     ss = m["set_scores"]
@@ -100,6 +140,8 @@ CONFIG = {
     # VALUE = model and market AGREE on the winner AND |edge| <= band.
     # i.e. both sides see the match the same way, within a tight margin.
     "value_edge_band":     0.05,
+    "kelly_fraction":      0.5,    # half-Kelly on O/U value picks
+    "kelly_max":           0.05,   # cap suggested size at 5% of bankroll
 
     # Refresh current-year results + rebuild predictions this often.
     "refresh_minutes":     60,
@@ -410,7 +452,7 @@ class OddsClient:
                 pass
         url = (f"{self.cfg['odds_base']}/sports/{self.sport}/odds/"
                f"?apiKey={self.key}&regions={self.cfg['odds_regions']}"
-               f"&markets=h2h&oddsFormat=decimal")
+               f"&markets=h2h,totals&oddsFormat=decimal")
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "tp"})
             with urllib.request.urlopen(req, timeout=30) as r:
@@ -862,9 +904,32 @@ def _build_tour(cfg, tour):
                 # sets) from the Elo match prob — the richer, football-
                 # like view. Display-only; not written to the log.
                 try:
-                    rec["markets"] = _compact_markets(tennis_sim.
-                        predict_markets(pa, tour["prefix"], surface,
-                                        best_of=best_of, n=10000))
+                    _m = tennis_sim.predict_markets(pa, tour["prefix"],
+                                                    surface, best_of=best_of,
+                                                    n=10000)
+                    rec["markets"] = _compact_markets(_m)
+                    # Value + half-Kelly on the games O/U, when the book offers
+                    # totals. Same "agree within band" rule as the match pick.
+                    _tot = _market_totals(ev)
+                    if _tot:
+                        mo = tennis_sim.over_prob(_m["games_dist"], _tot["line"])
+                        over = mo >= 0.5
+                        model_p = mo if over else 1 - mo
+                        mkt_p = (_tot["market_over"] if over
+                                 else 1 - _tot["market_over"])
+                        edge_ou = model_p - mkt_p
+                        agree = over == (_tot["market_over"] >= 0.5)
+                        best = _tot["best_over"] if over else _tot["best_under"]
+                        rec["markets"]["ou_market"] = {
+                            "line": _tot["line"],
+                            "pick": "Over" if over else "Under",
+                            "model": round(model_p, 3),
+                            "market": round(mkt_p, 3),
+                            "edge": round(edge_ou, 3),
+                            "value": bool(agree and abs(edge_ou) <= band),
+                            "odds": round(best, 3),
+                            "kelly": _kelly(model_p, best, cfg),
+                            "books": _tot["books"]}
                 except Exception as _e:
                     print(f"  markets failed {a} v {b}: {repr(_e)[:70]}")
                 preds.append(rec)

@@ -160,11 +160,11 @@ function draw(){
       <td>${mk?bar(mk.a,mk.b)+`<div class="small">${mk.books} books</div>`:'<span class="small">—</span>'}</td>
       <td>${edge}</td>
       <td class="small">${mk2?mk2.top_set+' <span class="small">('+Math.round(mk2.top_set_p*100)+'%)</span>':'—'}</td>
-      <td class="small">${mk2?mk2.ou_lean+' '+mk2.ou_line+' <span class="small">('+Math.round((mk2.ou_lean==='Over'?mk2.ou_over:mk2.ou_under)*100)+'%)</span>':'—'}</td></tr>`;}).join("");
+      <td class="small">${mk2 ? (mk2.ou_market ? mk2.ou_market.pick+' '+mk2.ou_market.line+' <span class="small">('+Math.round(mk2.ou_market.model*100)+'% v '+Math.round(mk2.ou_market.market*100)+'% mkt)</span>'+(mk2.ou_market.value?' <span class="val">VALUE</span>':'')+(mk2.ou_market.kelly>0?' <span class="small">· size '+(mk2.ou_market.kelly*100).toFixed(1)+'%</span>':'') : mk2.ou_lean+' '+mk2.ou_line+' <span class="small">('+Math.round((mk2.ou_lean==='Over'?mk2.ou_over:mk2.ou_under)*100)+'%)</span>') : '—'}</td></tr>`;}).join("");
   document.getElementById("content").innerHTML=cards+`
     <div class="small" style="margin:6px 2px 12px">A = first player, B = second ·
       Model = surface Elo · Market = de-vigged odds · Edge = model − market on pick ·
-      VALUE = model & bookmakers pick the SAME player AND |edge| ≤ 5% (consensus, not a tip) · Likely set / O/U games = point-model simulation from the Elo win prob</div>
+      VALUE = model & bookmakers pick the SAME player AND |edge| ≤ 5% (consensus, not a tip) · Likely set / O/U games = point-model simulation · O/U shows model% v market% with VALUE + half-Kelly size when the book offers totals</div>
     <table><thead><tr><th style="text-align:left">When (your time)</th>
       <th style="text-align:left">Match</th>
       <th>Model P(A / B)</th><th>Pick</th><th>Market P(A / B)</th><th>Edge</th><th>Likely set</th><th>O/U games</th>
