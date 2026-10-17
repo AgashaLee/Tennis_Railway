@@ -37,6 +37,30 @@ import urllib.request
 from datetime import datetime, timedelta
 from http.cookies import SimpleCookie as _SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import tennis_sim  # point-model markets (set score, O/U games)
+
+# Men's Grand Slams are best-of-5 (affects set-score / games markets).
+_SLAMS = ("australian_open", "french_open", "wimbledon", "us_open")
+
+
+def _compact_markets(m):
+    """Reduce the simulator output to the few fields the dashboard shows."""
+    ss = m["set_scores"]
+    top = max(ss, key=ss.get)
+    main = min(m["over_under"], key=lambda L: abs(L - m["avg_games"]))
+    ou = m["over_under"][main]
+    return {
+        "p_a": round(m["p_a"], 3),
+        "p_straight": round(m["p_straight"], 2),
+        "avg_games": m["avg_games"],
+        "top_set": top, "top_set_p": round(ss[top], 2),
+        "ou_line": main,
+        "ou_over": round(ou["over"], 2), "ou_under": round(ou["under"], 2),
+        "ou_lean": "Over" if ou["over"] >= 0.5 else "Under",
+        "best_of": m["best_of"],
+        "serve_pa": m["serve_pa"], "serve_pb": m["serve_pb"],
+    }
+
 
 # ═══════════════════════════════════════════════════════════
 # CONFIG
@@ -788,6 +812,8 @@ def _build_tour(cfg, tour):
     odds_status = "no key - odds disabled"
     if key:
         sport_keys = active_sport_keys(cfg, key, tour["prefix"])
+        best_of = 5 if (tour["prefix"] == "atp" and any(
+            any(sl in sk for sl in _SLAMS) for sk in sport_keys)) else 3
         events = []
         for sk in sport_keys:
             try:
@@ -832,6 +858,15 @@ def _build_tour(cfg, tour):
                     # Agreement pick: model & market favour the same player AND
                     # they're within band (default ±5%) of each other.
                     rec["value"] = (pick == market_fav) and (abs(edge) <= band)
+                # Point-model markets (set score, O/U games, straight
+                # sets) from the Elo match prob — the richer, football-
+                # like view. Display-only; not written to the log.
+                try:
+                    rec["markets"] = _compact_markets(tennis_sim.
+                        predict_markets(pa, tour["prefix"], surface,
+                                        best_of=best_of, n=10000))
+                except Exception as _e:
+                    print(f"  markets failed {a} v {b}: {repr(_e)[:70]}")
                 preds.append(rec)
             odds_status = (f"{tourn}: matched {matched}/{len(preds)}"
                            if preds else f"{tourn}: no priced matches")
