@@ -903,6 +903,11 @@ WHOP_PRODUCT_URL   = os.environ.get(
     "WHOP_PRODUCT_URL",
     "https://whop.com/tennis-insights-1cb2/tennis-predictor")
 
+# Token for /api/backup — a raw, token-gated download of the prediction
+# log so the public website can pull the tennis track record (same pattern
+# as the football app). Deliberately OUTSIDE the Whop gate. Unset = disabled.
+BACKUP_TOKEN       = os.environ.get("BACKUP_TOKEN", "").strip()
+
 # Manual allowlist of Whop user_ids granted access regardless of the API
 # check. Comma-separated. Use to onboard buyers while the membership API
 # is unreliable, or to grant comp access to yourself for testing.
@@ -1211,6 +1216,37 @@ class Handler(BaseHTTPRequestHandler):
         m = cookie.get(name)
         return m.value if m else None
 
+    def _handle_backup(self, query):
+        """Token-gated raw download of the prediction log, for the public
+        website to pull. Outside the Whop gate (its own token), and returns
+        404 — not 403 — on a missing/wrong token so it does not advertise
+        itself. Mirrors the football app's /api/backup."""
+        if not BACKUP_TOKEN:
+            return self._send(404, b"Not found", "text/plain")
+        q = _urlparse.parse_qs(query)
+        tok = (q.get("token") or [""])[0]
+        if not _secrets.compare_digest(tok, BACKUP_TOKEN):
+            print("  backup: rejected (bad token)")
+            return self._send(404, b"Not found", "text/plain")
+        which = (q.get("file") or ["tennis_predictions_log.json"])[0]
+        if which not in ("tennis_predictions_log.json",):
+            return self._send(400, b"Unknown file", "text/plain")
+        path = os.path.join(CONFIG["data_dir"], which)
+        try:
+            with open(path, "rb") as f:
+                body = f.read()
+        except FileNotFoundError:
+            return self._send(404, b"Not found", "text/plain")
+        print(f"  backup: served {which} ({len(body)} bytes)")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Disposition",
+                         f'attachment; filename="{which}"')
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         parsed = _urlparse.urlparse(self.path)
         path = parsed.path
@@ -1222,6 +1258,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_callback(parsed.query)
         if path == "/whop/logout":
             return self._handle_logout()
+
+        # Website pulls the track record here (token-gated, pre-gate).
+        if path == "/api/backup":
+            return self._handle_backup(parsed.query)
 
         # If OAuth is not configured (e.g. local dev), keep the old open
         # behaviour. On Railway with all WHOP_* set, the gate is on.
