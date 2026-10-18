@@ -83,6 +83,40 @@ def _kelly(p, odds, cfg):
                      cfg.get("kelly_max", 0.05)), 4)
 
 
+def _history_index(matches):
+    """name -> [(date, surface, won_bool, opponent)] from the Sackmann history,
+    for the clickable player cards (record, form, surface splits, H2H)."""
+    idx = {}
+    for m in matches:
+        idx.setdefault(m.winner, []).append((m.date, m.surface, True, m.loser))
+        idx.setdefault(m.loser, []).append((m.date, m.surface, False, m.winner))
+    return idx
+
+
+def _player_card(hidx, disp_name, rated_name, elo, surface):
+    ms = sorted(hidx.get(rated_name, []), key=lambda x: x[0], reverse=True)
+    w = sum(1 for _, _, won, _ in ms if won)
+    yr = datetime.now().year
+    msy = [x for x in ms if x[0].year == yr]
+    wy = sum(1 for _, _, won, _ in msy if won)
+    surf = {}
+    for sn in ("Hard", "Clay", "Grass"):
+        sm = [x for x in ms if x[1] == sn]
+        sw = sum(1 for _, _, won, _ in sm if won)
+        surf[sn] = [sw, len(sm) - sw]
+    return {"name": disp_name, "w": w, "l": len(ms) - w,
+            "w_year": wy, "l_year": len(msy) - wy, "surfaces": surf,
+            "form": ["W" if won else "L" for _, _, won, _ in ms[:10]],
+            "elo": round(elo._ro(rated_name)),
+            "elo_surf": round(elo._rs(rated_name, surface))}
+
+
+def _h2h(hidx, rated_a, rated_b):
+    rows = [x for x in hidx.get(rated_a, []) if x[3] == rated_b]
+    aw = sum(1 for _, _, won, _ in rows if won)
+    return {"a": aw, "b": len(rows) - aw}
+
+
 def _compact_markets(m):
     """Reduce the simulator output to the few fields the dashboard shows."""
     ss = m["set_scores"]
@@ -867,6 +901,7 @@ def _build_tour(cfg, tour):
         if events:
             band = cfg["value_edge_band"]
             known = set(elo.ovr) | {p for (p, _s) in elo.surf}
+            hidx = _history_index(matches)
             matched = 0
             for ev in events:
                 a = ev.get("home_team")
@@ -887,6 +922,10 @@ def _build_tour(cfg, tour):
                        # ISO8601 UTC kickoff from The Odds API; the dashboard
                        # renders it in the viewer's local time.
                        "start": ev.get("commence_time")}
+                rec["players"] = {
+                    "a": _player_card(hidx, a, ra, elo, surface),
+                    "b": _player_card(hidx, b, rb, elo, surface),
+                    "h2h": _h2h(hidx, ra, rb)}
                 mp = _market_two(ev)
                 if mp:
                     matched += 1

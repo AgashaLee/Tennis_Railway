@@ -60,6 +60,23 @@
     .bar{min-width:88px}
     select#tour{min-width:150px;font-size:12px}
   }
+  .plink{cursor:pointer;border-bottom:1px dotted #6b6b80}
+  .plink:hover{color:#fff;border-bottom-color:#fff}
+  .modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:50;
+    align-items:flex-start;justify-content:center;padding:36px 12px;overflow:auto}
+  .modal.open{display:flex}
+  .modalbox{background:#18181f;border:1px solid #2a2a38;border-radius:12px;
+    max-width:580px;width:100%;padding:18px}
+  .modalbox h3{font-size:16px}
+  .mclose{float:right;cursor:pointer;color:#8a8a9a;font-size:18px;line-height:1}
+  .pcardwrap{display:flex;gap:12px;flex-wrap:wrap}
+  .pcard{flex:1;min-width:230px;background:#1d1d26;border:1px solid #2a2a38;
+    border-radius:10px;padding:12px}
+  .pcard h4{font-size:14px;margin-bottom:8px}
+  .formrow{display:flex;gap:3px;margin-top:5px;flex-wrap:wrap}
+  .formrow span{width:16px;height:16px;border-radius:3px;font-size:10px;
+    line-height:16px;text-align:center;color:#fff;font-weight:700}
+  .fW{background:#059669}.fL{background:#b91c1c}
 </style>
 </head>
 <body>
@@ -156,7 +173,7 @@ function draw(){
       Surface assumed from recent results — odds API gives no surface.</div></div>
     <div class="card"><h3>Odds</h3><div class="small">${m.odds_status}</div></div>
   </div>`;
-  const rows=t.predictions.map(p=>{
+  const rows=t.predictions.map((p,i)=>{
     const mk=p.market;
     const mk2=p.markets;
     let edge=`<span class="small">—</span>`;
@@ -167,7 +184,7 @@ function draw(){
     }
     return `<tr>
       <td class="small" style="white-space:nowrap">${fmtWhen(p.start)}</td>
-      <td class="match">${p.player_a} <span class="small">v</span> ${p.player_b}</td>
+      <td class="match">${p.players?`<span class="plink" onclick="showPlayers('${t.id}',${i})">${p.player_a}</span>`:p.player_a} <span class="small">v</span> ${p.players?`<span class="plink" onclick="showPlayers('${t.id}',${i})">${p.player_b}</span>`:p.player_b}</td>
       <td>${bar(p.p_a,p.p_b)}</td>
       <td><span class="pick">${p.pick===p.player_a?'A':'B'}</span> ${p.pick}</td>
       <td>${mk?bar(mk.a,mk.b)+`<div class="small">${mk.books} books</div>`:'<span class="small">—</span>'}</td>
@@ -262,6 +279,33 @@ function load(){
     `<div class="warm">Failed to load: ${e}</div>`;});
 }
 load();
+</script>
+<div id="modal" class="modal" onclick="if(event.target===this)closeModal()">
+  <div class="modalbox" id="modalbox"></div></div>
+<script>
+function closeModal(){document.getElementById("modal").classList.remove("open");}
+document.addEventListener("keydown",e=>{if(e.key==="Escape")closeModal();});
+function showPlayers(tid,i){
+  const t=((STATE.payload||{}).tours||[]).find(x=>x.id===tid); if(!t)return;
+  const p=t.predictions[i]; if(!p||!p.players)return; const pl=p.players;
+  const sr=(c,s)=>c.surfaces[s]?c.surfaces[s][0]+"-"+c.surfaces[s][1]:"0-0";
+  const card=(c,isPick)=>{
+    const form=(c.form||[]).map(x=>'<span class="f'+x+'">'+x+'</span>').join('')||'<span class="small">—</span>';
+    return '<div class="pcard"><h4>'+c.name+(isPick?' <span class="val">PICK</span>':'')+'</h4>'
+      +'<div class="metric"><span>Elo (surface)</span><b>'+c.elo+' <span class="small">('+c.elo_surf+')</span></b></div>'
+      +'<div class="metric"><span>Career W-L</span><b>'+c.w+'-'+c.l+'</b></div>'
+      +'<div class="metric"><span>This year</span><b>'+c.w_year+'-'+c.l_year+'</b></div>'
+      +'<div class="metric"><span>Hard / Clay / Grass</span><b>'+sr(c,'Hard')+' · '+sr(c,'Clay')+' · '+sr(c,'Grass')+'</b></div>'
+      +'<div class="small" style="margin-top:8px">Recent form (newest left)</div>'
+      +'<div class="formrow">'+form+'</div></div>';};
+  document.getElementById("modalbox").innerHTML=
+    '<span class="mclose" onclick="closeModal()">✕</span>'
+    +'<h3>'+pl.a.name+' <span class="small">v</span> '+pl.b.name+'</h3>'
+    +'<div class="small" style="margin:8px 0 12px">Head-to-head: <b>'+pl.a.name+' '+pl.h2h.a+'–'+pl.h2h.b+' '+pl.b.name+'</b></div>'
+    +'<div class="pcardwrap">'+card(pl.a,p.pick===p.player_a)+card(pl.b,p.pick===p.player_b)+'</div>'
+    +'<div class="small" style="margin-top:12px">Record, form and surface splits from historical match data. Live ranking & age not included.</div>';
+  document.getElementById("modal").classList.add("open");
+}
 </script>
 </body>
 </html>
