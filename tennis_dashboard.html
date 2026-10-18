@@ -47,6 +47,19 @@
        border-top-color:#6ee7b7;border-radius:50%;animation:s 1s linear infinite;
        vertical-align:middle;margin-right:8px}
   @keyframes s{to{transform:rotate(360deg)}}
+  .tscroll{overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid #2a2a38;
+       border-radius:10px;margin-bottom:12px}
+  .tscroll table{border:none;border-radius:0;min-width:660px}
+  @media (max-width:640px){
+    body{font-size:12px}
+    .header{padding:10px 12px}
+    .wrap{padding:0 10px;margin:14px auto}
+    .cards{gap:8px}
+    th,td{padding:7px 7px;font-size:11px}
+    td.match{white-space:normal;min-width:120px}
+    .bar{min-width:88px}
+    select#tour{min-width:150px;font-size:12px}
+  }
 </style>
 </head>
 <body>
@@ -160,15 +173,15 @@ function draw(){
       <td>${mk?bar(mk.a,mk.b)+`<div class="small">${mk.books} books</div>`:'<span class="small">—</span>'}</td>
       <td>${edge}</td>
       <td class="small">${mk2?mk2.top_set+' <span class="small">('+Math.round(mk2.top_set_p*100)+'%)</span>':'—'}</td>
-      <td class="small">${mk2 ? (mk2.ou_market ? mk2.ou_market.pick+' '+mk2.ou_market.line+' <span class="small">('+Math.round(mk2.ou_market.model*100)+'% v '+Math.round(mk2.ou_market.market*100)+'% mkt)</span>'+(mk2.ou_market.value?' <span class="val">VALUE</span>':'')+(mk2.ou_market.kelly>0?' <span class="small">· size '+(mk2.ou_market.kelly*100).toFixed(1)+'%</span>':'') : mk2.ou_lean+' '+mk2.ou_line+' <span class="small">('+Math.round((mk2.ou_lean==='Over'?mk2.ou_over:mk2.ou_under)*100)+'%)</span>') : '—'}</td></tr>`;}).join("");
+      <td class="small" style="white-space:nowrap">${mk2 ? (mk2.ou_market ? (mk2.ou_market.pick==='Over'?'O':'U')+' '+mk2.ou_market.line+' <b>'+Math.round(mk2.ou_market.model*100)+'%</b><span class="small">/'+Math.round(mk2.ou_market.market*100)+'%</span>'+(mk2.ou_market.value?' <span class="val">VAL</span>':'')+(mk2.ou_market.kelly>0?' <span class="small">K'+(mk2.ou_market.kelly*100).toFixed(1)+'</span>':'') : mk2.ou_lean+' '+mk2.ou_line+' <span class="small">('+Math.round((mk2.ou_lean==='Over'?mk2.ou_over:mk2.ou_under)*100)+'%)</span>') : '—'}</td></tr>`;}).join("");
   document.getElementById("content").innerHTML=cards+`
     <div class="small" style="margin:6px 2px 12px">A = first player, B = second ·
       Model = surface Elo · Market = de-vigged odds · Edge = model − market on pick ·
       VALUE = model & bookmakers pick the SAME player AND |edge| ≤ 5% (consensus, not a tip) · Likely set / O/U games = point-model simulation · O/U shows model% v market% with VALUE + half-Kelly size when the book offers totals</div>
-    <table><thead><tr><th style="text-align:left">When (your time)</th>
+    <div class="tscroll"><table><thead><tr><th style="text-align:left">When (your time)</th>
       <th style="text-align:left">Match</th>
       <th>Model P(A / B)</th><th>Pick</th><th>Market P(A / B)</th><th>Edge</th><th>Likely set</th><th>O/U games</th>
-      </tr></thead><tbody>${rows||'<tr><td colspan="8" class="small">No upcoming matches with odds.</td></tr>'}</tbody></table>`;
+      </tr></thead><tbody>${rows||'<tr><td colspan="8" class="small">No upcoming matches with odds.</td></tr>'}</tbody></table></div>`;
 }
 
 function drawValue(d){
@@ -192,10 +205,10 @@ function drawValue(d){
     inside <b>±5%</b>. These are consensus picks — both signals point the same
     way without a large disagreement. Not tips; lower edge = tighter agreement.</div>
     </div></div>
-    <table><thead><tr><th style="text-align:left">Tour</th>
+    <div class="tscroll"><table><thead><tr><th style="text-align:left">Tour</th>
     <th style="text-align:left">When (your time)</th>
     <th style="text-align:left">Match</th><th>Pick</th><th>Model</th><th>Edge</th><th>Surface</th>
-    </tr></thead><tbody>${rows||'<tr><td colspan="7" class="small">No value picks right now.</td></tr>'}</tbody></table>`;
+    </tr></thead><tbody>${rows||'<tr><td colspan="7" class="small">No value picks right now.</td></tr>'}</tbody></table></div>`;
 }
 
 function drawResults(d){
@@ -234,9 +247,9 @@ function drawResults(d){
     <td class="small">${r.value?'<span class="val">VALUE</span>':''}</td>
     <td class="small">${r.surface||''}</td></tr>`).join("");
   document.getElementById("content").innerHTML=cards+`
-    <table><thead><tr><th>Tour</th><th style="text-align:left">Match</th>
+    <div class="tscroll"><table><thead><tr><th>Tour</th><th style="text-align:left">Match</th>
     <th>Pick</th><th>Hit</th><th>Winner</th><th>Value?</th><th>Surface</th>
-    </tr></thead><tbody>${rows}</tbody></table>`;
+    </tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
 function load(){
