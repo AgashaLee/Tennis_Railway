@@ -1201,8 +1201,6 @@ def _whop_has_active_membership(user_id, access_token=None):
             (f"{_WHOP_MEMBERS_URL}?{qs_user}", tok, label),
             (f"https://api.whop.com/api/v5/me/memberships?{qs_me}",
              tok, label),
-            (f"https://api.whop.com/api/v2/memberships?{qs_user}",
-             tok, label),
         ])
 
     for url, tok, label in attempts:
