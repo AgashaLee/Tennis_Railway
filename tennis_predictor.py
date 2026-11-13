@@ -1172,23 +1172,63 @@ def _whop_user_info(access_token):
         "Whop user-info call failed on all endpoints:\n" + "\n".join(errors))
 
 
+# Statuses that grant access. "trialing" is ESSENTIAL: Whop marks a free trial as
+# trialing, NOT active -- a status=active query filter returns 200 with 0 items for
+# a genuine trial member and locks every trial customer out (the bug that nearly
+# killed the football product's launch).
+_WHOP_OK_STATUS = {"active", "trialing", "trialing_canceled", "past_due"}
+# Keys a membership row might carry its product/access-pass id under. We match the
+# product OURSELVES rather than trusting the query filter, so an endpoint that
+# ignores product_id cannot grant access off some other (e.g. free) product.
+_WHOP_PROD_KEYS = ("product_id", "product", "access_pass_id", "access_pass",
+                   "plan_id", "plan")
+
+
+def _whop_row_product_ids(row):
+    """Every product-ish id string on a membership row (handles nested dicts)."""
+    out = set()
+    if not isinstance(row, dict):
+        return out
+    for k in _WHOP_PROD_KEYS:
+        v = row.get(k)
+        if isinstance(v, str):
+            out.add(v)
+        elif isinstance(v, dict):
+            for kk in ("id", "product_id", "access_pass_id"):
+                if isinstance(v.get(kk), str):
+                    out.add(v[kk])
+    return out
+
+
+def _whop_row_grants_access(row):
+    """True if this membership row entitles the user to OUR product."""
+    if not isinstance(row, dict):
+        return False
+    prods = _whop_row_product_ids(row)
+    if prods and WHOP_PRODUCT_ID not in prods:
+        return False
+    valid = row.get("valid")
+    if valid is False:
+        return False
+    status = str(row.get("status", "")).lower()
+    if status and status not in _WHOP_OK_STATUS:
+        return False
+    return bool(valid) or status in _WHOP_OK_STATUS or (valid is None and not status)
+
+
 def _whop_has_active_membership(user_id, access_token=None):
     # Fast-path: user is on the manual allowlist.
     if user_id in WHOP_ALLOW_USERS:
         print(f"  user {user_id} matched WHOP_ALLOW_USERS allowlist")
         return True
 
-    # Whop's REST docs have been inconsistent; try multiple endpoint
-    # shapes and both auth modes. First success wins.
-    qs_user = _urlparse.urlencode({
-        "user_id":    user_id,
-        "product_id": WHOP_PRODUCT_ID,
-        "status":     "active",
-    })
-    qs_me = _urlparse.urlencode({
-        "product_id": WHOP_PRODUCT_ID,
-        "status":     "active",
-    })
+    # NO status= filter: fetch and judge locally, because a status=active filter
+    # returns 0 items for trial members and locks them out. And keep trying every
+    # endpoint -- an empty / non-matching answer from one must NOT end the check,
+    # or the first 200 decides everything.
+    qs_user = _urlparse.urlencode({"user_id": user_id, "product_id": WHOP_PRODUCT_ID})
+    qs_me = _urlparse.urlencode({"product_id": WHOP_PRODUCT_ID})
+    qs_user_bare = _urlparse.urlencode({"user_id": user_id})
     tokens = []
     if access_token:
         tokens.append(("oauth", access_token))
@@ -1199,8 +1239,9 @@ def _whop_has_active_membership(user_id, access_token=None):
     for label, tok in tokens:
         attempts.extend([
             (f"{_WHOP_MEMBERS_URL}?{qs_user}", tok, label),
-            (f"https://api.whop.com/api/v5/me/memberships?{qs_me}",
-             tok, label),
+            (f"https://api.whop.com/api/v5/me/memberships?{qs_me}", tok, label),
+            # last resort: no product filter, matched locally above
+            (f"{_WHOP_MEMBERS_URL}?{qs_user_bare}", tok, label),
         ])
 
     for url, tok, label in attempts:
@@ -1210,9 +1251,13 @@ def _whop_has_active_membership(user_id, access_token=None):
             with urllib.request.urlopen(req, timeout=15) as r:
                 data = json.loads(r.read())
             items = data.get("data") if isinstance(data, dict) else data
-            print(f"  membership check OK via {label} {url[:80]} "
-                  f"-> {len(items) if items else 0} items")
-            return bool(items)
+            items = items or []
+            ok = any(_whop_row_grants_access(i) for i in items)
+            print(f"  membership {label} 200 -> {len(items)} items "
+                  f"-> {'GRANT' if ok else 'no match'}")
+            if ok:
+                return True
+            # do NOT return False here -- keep trying the other endpoints.
         except urllib.error.HTTPError as e:
             err = e.read().decode("utf-8", errors="replace")[:120]
             print(f"  membership {label} {url[:80]} -> "
